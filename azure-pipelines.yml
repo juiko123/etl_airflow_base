@@ -1,0 +1,128 @@
+# =============================================================================
+# Azure Pipeline — ETL Backend Airflow
+#
+# Se ejecuta automáticamente en Pull Requests hacia:
+#   - main    (rama de producción)
+#   - develop (rama de integración — GitFlow)
+#
+# Pasos: instalar dependencias → ejecutar pytest → publicar resultados
+# =============================================================================
+
+# Disparador en push directo (rama main y develop)
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+# Disparador automático en Pull Requests
+pr:
+  branches:
+    include:
+      - main
+      - develop
+  drafts: false   # no ejecutar en PRs marcados como borrador
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  pythonVersion: '3.13'
+  pip.cacheDir: $(Pipeline.Workspace)/.pip
+
+# =============================================================================
+# Etapas
+# =============================================================================
+stages:
+
+  # ---------------------------------------------------------------------------
+  # Stage 1: Pruebas automatizadas (Unit Testing + integración)
+  # ---------------------------------------------------------------------------
+  - stage: Test
+    displayName: 'Pruebas Automatizadas'
+    jobs:
+
+      - job: RunTests
+        displayName: 'pytest — Unit Testing e integración'
+        timeoutInMinutes: 15
+
+        steps:
+
+          # ------------------------------------------------------------------
+          # 1. Configurar la versión de Python
+          # ------------------------------------------------------------------
+          - task: UsePythonVersion@0
+            displayName: 'Configurar Python $(pythonVersion)'
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+
+          # ------------------------------------------------------------------
+          # 2. Cachear dependencias pip para acelerar ejecuciones sucesivas
+          # ------------------------------------------------------------------
+          - task: Cache@2
+            displayName: 'Cachear dependencias pip'
+            inputs:
+              key: 'pip | "$(Agent.OS)" | requirements-dev.txt'
+              restoreKeys: |
+                pip | "$(Agent.OS)"
+              path: $(pip.cacheDir)
+
+          # ------------------------------------------------------------------
+          # 3. Instalar dependencias de desarrollo
+          # ------------------------------------------------------------------
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements-dev.txt
+            displayName: 'Instalar dependencias'
+            env:
+              PIP_CACHE_DIR: $(pip.cacheDir)
+
+          # ------------------------------------------------------------------
+          # 4. Ejecutar pytest con cobertura de código
+          #    --junitxml  → resultados en formato JUnit para Azure DevOps
+          #    --cov       → cobertura del paquete etl/
+          #    --cov-report xml → formato Cobertura para el reporte de Azure
+          # ------------------------------------------------------------------
+          - script: |
+              python -m pytest tests/ \
+                --junitxml=$(Build.ArtifactStagingDirectory)/test-results.xml \
+                --cov=etl \
+                --cov-report=xml:$(Build.ArtifactStagingDirectory)/coverage.xml \
+                --cov-report=html:$(Build.ArtifactStagingDirectory)/htmlcov \
+                --cov-fail-under=80 \
+                -v
+            displayName: 'Ejecutar pytest'
+
+          # ------------------------------------------------------------------
+          # 5. Publicar resultados de las pruebas en Azure DevOps
+          #    Visible en la pestaña "Tests" del pipeline
+          # ------------------------------------------------------------------
+          - task: PublishTestResults@2
+            displayName: 'Publicar resultados de Unit Testing'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(Build.ArtifactStagingDirectory)/test-results.xml'
+              testRunTitle: 'ETL Pipeline — $(Build.SourceBranchName)'
+              failTaskOnFailedTests: true
+
+          # ------------------------------------------------------------------
+          # 6. Publicar reporte de cobertura de código
+          #    Visible en la pestaña "Coverage" del pipeline
+          # ------------------------------------------------------------------
+          - task: PublishCodeCoverageResults@2
+            displayName: 'Publicar cobertura de código'
+            condition: always()
+            inputs:
+              summaryFileLocation: '$(Build.ArtifactStagingDirectory)/coverage.xml'
+
+          # ------------------------------------------------------------------
+          # 7. Mostrar la versión del proyecto en el log (trazabilidad)
+          # ------------------------------------------------------------------
+          - script: |
+              echo "Versión del proyecto: $(cat VERSION)"
+              echo "Rama: $(Build.SourceBranchName)"
+              echo "Commit: $(Build.SourceVersion)"
+            displayName: 'Info de versión y trazabilidad'
+            condition: always()

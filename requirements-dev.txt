@@ -1,0 +1,6 @@
+# Dependencias de desarrollo — no instalar en producción
+-r requirements.txt
+
+# Unit Testing e integración
+pytest>=8.0.0
+pytest-cov>=5.0.0
