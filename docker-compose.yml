@@ -1,0 +1,32 @@
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: etl_postgres
+    environment:
+      POSTGRES_USER: etl
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl -d testdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  oracle:
+    image: gvenzl/oracle-free:23-slim
+    container_name: etl_oracle
+    environment:
+      ORACLE_PASSWORD: oracle
+      APP_USER: etl_user
+      APP_USER_PASSWORD: secret
+    ports:
+      - "1521:1521"
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s

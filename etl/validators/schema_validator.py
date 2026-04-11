@@ -263,6 +263,10 @@ class SchemaValidator:
         if base_name in _DATETIME_BASE_NAMES:
             return any(t in pg_type for t in ("timestamp", "date", "time"))
 
+        # Decimal parametrizado (Oracle NUMBER, MSSQL DECIMAL/NUMERIC)
+        if base_name == "Decimal":
+            return any(t in pg_type for t in ("numeric", "decimal", "real", "float", "double"))
+
         compatible = _POLARS_TO_PG.get(base_cls)
         if compatible is None:
             # Struct, List, Array, etc. → permitir almacenamiento en json/text

@@ -10,11 +10,11 @@ from __future__ import annotations
 import argparse
 import itertools
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Generator, Optional
 
 import polars as pl
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.pool import QueuePool
 
 from etl.config.settings import load_config, ETLConfig
@@ -126,11 +126,24 @@ def run_pipeline(
             )
             if validator is not None:
                 chunks = _validate_first_chunk(chunks, validator, target_table, target_schema)
+
             results = loader.load_chunks(chunks, target_table, conflict_columns, schema=target_schema)
 
-            # Actualizar watermark al máximo timestamp visto en esta ejecución
-            # (el loader lo rastrea internamente; aquí se usa NOW() como límite superior seguro)
-            watermark_mgr.update_timestamp(table, datetime.now(tz=timezone.utc))
+            # Watermark = MAX(watermark_col) consultado directamente en la fuente.
+            # Usar el reloj de la fuente (no del orquestador) garantiza que funcione
+            # aunque la fuente y el orquestador estén en zonas horarias distintas.
+            with source_engine.connect() as _conn:
+                max_ts = _conn.execute(
+                    text(f"SELECT MAX({watermark_col}) FROM {table}")
+                ).scalar()
+            if max_ts is not None:
+                # Normalizar a datetime naive: Oracle devuelve TIMESTAMP sin tz,
+                # así la comparación en la próxima ejecución no tiene conflictos de tz.
+                if hasattr(max_ts, "tzinfo") and max_ts.tzinfo is not None:
+                    max_ts = max_ts.replace(tzinfo=None)
+                watermark_mgr.update_timestamp(table, max_ts)
+            else:
+                log.info("watermark_not_updated", reason="no_rows_extracted", table=table)
 
         elif mode == "rowversion":
             last_rv = watermark_mgr.get_last_rowversion(table)
