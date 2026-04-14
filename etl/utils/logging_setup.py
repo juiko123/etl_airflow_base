@@ -1,6 +1,10 @@
 """
 Logging estructurado para monitoreo del DBA.
 Genera líneas JSON a archivo + stderr — parseable por Datadog, Splunk, grep.
+
+Cuando se ejecuta dentro de Airflow (AIRFLOW_CTX_DAG_ID presente) se omite
+la configuración de handlers para no interferir con el sistema de logging de
+Airflow y evitar el loop de re-serialización JSON.
 """
 import logging
 import sys
@@ -10,11 +14,37 @@ import structlog
 from structlog.types import Processor
 
 
+def _inside_airflow() -> bool:
+    return "AIRFLOW_CTX_DAG_ID" in os.environ
+
+
 def setup_logging(log_dir: str = "etl/logs", level: str = "INFO") -> None:
+    shared_processors: list[Processor] = [
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+    ]
+
+    if _inside_airflow():
+        # Dentro de Airflow: solo configurar structlog para que use el
+        # logging estándar — Airflow ya gestiona handlers y formatters.
+        structlog.configure(
+            processors=shared_processors + [
+                structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+            ],
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            wrapper_class=structlog.stdlib.BoundLogger,
+            cache_logger_on_first_use=True,
+        )
+        return
+
+    # Fuera de Airflow: configuración completa con archivo JSONL + stderr
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     log_file = Path(log_dir) / "etl_pipeline.jsonl"
 
-    # Logger raíz → archivo + stderr
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
@@ -28,15 +58,6 @@ def setup_logging(log_dir: str = "etl/logs", level: str = "INFO") -> None:
 
     root_logger.addHandler(file_handler)
     root_logger.addHandler(stderr_handler)
-
-    shared_processors: list[Processor] = [
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
-        structlog.processors.TimeStamper(fmt="iso", utc=True),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-    ]
 
     structlog.configure(
         processors=shared_processors + [

@@ -1,0 +1,19 @@
+# Imagen Airflow extendida con las dependencias del proyecto ETL
+# Usa python-oracledb en modo thin (sin Oracle Client) y psycopg2-binary
+FROM apache/airflow:2.10.4-python3.11
+
+# Copiar sólo lo necesario para instalar deps antes de copiar el código fuente
+# (aprovecha el caché de Docker si requirements.txt no cambia)
+COPY requirements.txt /tmp/etl_requirements.txt
+
+# Las dependencias ETL se instalan sin constraints de Airflow porque:
+#   - oracledb, polars, structlog no tienen conflictos con Airflow internals
+#   - sqlalchemy>=2.0 requerido por el pipeline — Airflow 2.10 lo soporta
+#   - Los providers de postgres y common-sql ya vienen en la imagen base
+RUN pip install --no-cache-dir \
+    "oracledb>=2.0.0" \
+    "polars>=0.20.0" \
+    "structlog>=24.0.0" \
+    "concurrent-log-handler>=0.9.25" \
+    "tenacity>=8.2.0" \
+    "python-dotenv>=1.0.0"

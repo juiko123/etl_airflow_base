@@ -1,16 +1,88 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Stack completo: Oracle (fuente) + PostgreSQL (destino ETL) + Airflow
+#
+# Uso rápido:
+#   cp .env.example .env           # ajustar contraseñas si aplica
+#   docker compose build airflow-webserver airflow-scheduler
+#   docker compose up airflow-init
+#   docker compose up -d
+#   open http://localhost:8080      # Airflow UI  (admin / admin)
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  image: ${AIRFLOW_IMAGE_NAME:-etl_airflow_base-airflow}
+  environment: &airflow-env
+    # ── Airflow core ─────────────────────────────────────────────────────────
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: "America/Mexico_City"
+
+    # ── Base de datos de metadatos ────────────────────────────────────────────
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${AIRFLOW_METADATA_USER:-airflow}:${AIRFLOW_METADATA_PASSWORD:-airflow}@airflow-metadata/${AIRFLOW_METADATA_DB:-airflow}
+
+    # ── UI / API ──────────────────────────────────────────────────────────────
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-supersecret}
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
+
+    # ── Python path — permite importar el paquete etl.* montado en el volumen
+    PYTHONPATH: /opt/airflow
+
+    # ── Variables de entorno del proyecto ETL ────────────────────────────────
+    SOURCE_DIALECT:    ${SOURCE_DIALECT:-oracle}
+    SOURCE_HOST:       ${SOURCE_HOST:-oracle}
+    SOURCE_PORT:       ${SOURCE_PORT:-1521}
+    SOURCE_DATABASE:   ${SOURCE_DATABASE:-FREEPDB1}
+    SOURCE_USER:       ${SOURCE_USER:-etl_user}
+    SOURCE_PASSWORD:   ${SOURCE_PASSWORD:-secret}
+    SOURCE_POOL_SIZE:  ${SOURCE_POOL_SIZE:-3}
+
+    TARGET_HOST:       ${TARGET_HOST:-postgres}
+    TARGET_PORT:       ${TARGET_PORT:-5432}
+    TARGET_DATABASE:   ${TARGET_DATABASE:-testdb}
+    TARGET_USER:       ${TARGET_USER:-etl}
+    TARGET_PASSWORD:   ${TARGET_PASSWORD:-secret}
+    TARGET_POOL_SIZE:  ${TARGET_POOL_SIZE:-5}
+
+    ETL_CHUNK_SIZE:    ${ETL_CHUNK_SIZE:-10000}
+    ETL_MAX_WORKERS:   ${ETL_MAX_WORKERS:-4}
+    ETL_RETRY_ATTEMPTS: ${ETL_RETRY_ATTEMPTS:-5}
+
+  volumes:
+    # DAGs y código del proyecto montados en los contenedores de Airflow
+    - ./dags:/opt/airflow/dags
+    - ./etl:/opt/airflow/etl          # hace disponible el paquete etl.*
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    airflow-metadata:
+      condition: service_healthy
+
+
 services:
+
+  # ── Bases de datos ──────────────────────────────────────────────────────────
 
   postgres:
     image: postgres:16
     container_name: etl_postgres
     environment:
-      POSTGRES_USER: etl
-      POSTGRES_PASSWORD: secret
-      POSTGRES_DB: testdb
+      POSTGRES_USER:     ${TARGET_USER:-etl}
+      POSTGRES_PASSWORD: ${TARGET_PASSWORD:-secret}
+      POSTGRES_DB:       ${TARGET_DATABASE:-testdb}
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U etl -d testdb"]
+      test: ["CMD-SHELL", "pg_isready -U ${TARGET_USER:-etl} -d ${TARGET_DATABASE:-testdb}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -19,14 +91,88 @@ services:
     image: gvenzl/oracle-free:23-slim
     container_name: etl_oracle
     environment:
-      ORACLE_PASSWORD: oracle
-      APP_USER: etl_user
-      APP_USER_PASSWORD: secret
+      ORACLE_PASSWORD:    oracle
+      APP_USER:           ${SOURCE_USER:-etl_user}
+      APP_USER_PASSWORD:  ${SOURCE_PASSWORD:-secret}
     ports:
       - "1521:1521"
+    volumes:
+      - oracle_data:/opt/oracle/oradata
     healthcheck:
       test: ["CMD-SHELL", "healthcheck.sh"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 60s
+
+  airflow-metadata:
+    image: postgres:16
+    container_name: airflow_metadata
+    environment:
+      POSTGRES_USER:     ${AIRFLOW_METADATA_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_METADATA_PASSWORD:-airflow}
+      POSTGRES_DB:       ${AIRFLOW_METADATA_DB:-airflow}
+    volumes:
+      - airflow_metadata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_METADATA_USER:-airflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Airflow ─────────────────────────────────────────────────────────────────
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs /opt/airflow/plugins
+        airflow db migrate
+        airflow users create \
+          --username "${_AIRFLOW_WWW_USER_USERNAME:-admin}" \
+          --password "${_AIRFLOW_WWW_USER_PASSWORD:-admin}" \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+        echo "Airflow init complete"
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--hostname", "$(hostname)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:
+  oracle_data:
+  airflow_metadata:

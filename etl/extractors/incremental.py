@@ -37,27 +37,24 @@ class IncrementalExtractor:
         table: str,
         watermark_col: str,
         last_value: Optional[datetime],
-        columns: str = "*",
-        order_by: Optional[str] = None,
     ) -> Generator[pl.DataFrame, None, None]:
         """
         Produce DataFrames de polars con `chunk_size` filas cada uno.
         `last_value=None` → carga completa (primera ejecución).
         """
-        order_col = order_by or watermark_col
         if last_value is None:
             query = f"""
-                SELECT {columns}
+                SELECT *
                 FROM   {table}
-                ORDER  BY {order_col}
+                ORDER  BY {watermark_col}
             """
             params: dict = {}
         else:
             query = f"""
-                SELECT {columns}
+                SELECT *
                 FROM   {table}
                 WHERE  {watermark_col} > :last_ts
-                ORDER  BY {order_col}
+                ORDER  BY {watermark_col}
             """
             params = {"last_ts": last_value}
 
@@ -68,7 +65,6 @@ class IncrementalExtractor:
         table: str,
         rowver_col: str,
         last_rowver: Optional[int],
-        columns: str = "*",
     ) -> Generator[pl.DataFrame, None, None]:
         """
         Extracción específica de MSSQL por rowversion.
@@ -76,14 +72,14 @@ class IncrementalExtractor:
         """
         if last_rowver is None:
             query = f"""
-                SELECT {columns}, CONVERT(BIGINT, {rowver_col}) AS __rowver
+                SELECT *, CONVERT(BIGINT, {rowver_col}) AS __rowver
                 FROM   {table}
                 ORDER  BY {rowver_col}
             """
             params = {}
         else:
             query = f"""
-                SELECT {columns}, CONVERT(BIGINT, {rowver_col}) AS __rowver
+                SELECT *, CONVERT(BIGINT, {rowver_col}) AS __rowver
                 FROM   {table}
                 WHERE  CONVERT(BIGINT, {rowver_col}) > :last_rv
                 ORDER  BY {rowver_col}

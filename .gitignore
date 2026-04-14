@@ -59,9 +59,10 @@ coverage/
 *.env
 
 # =============================================================================
-# Logs del ETL pipeline
+# Logs del ETL pipeline y Airflow
 # =============================================================================
 etl/logs/
+airflow/logs/
 *.jsonl
 *.log
 

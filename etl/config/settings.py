@@ -31,8 +31,16 @@ class SourceConfig:
                 "?driver=ODBC+Driver+17+for+SQL+Server"
             )
         elif self.dialect == "oracle":
+            # python-oracledb actúa como drop-in de cx_Oracle en modo thin
+            # (sin Oracle Client instalado). SQLAlchemy 1.4 usa el dialecto
+            # oracle+cx_oracle y verifica cx_Oracle.version >= "5.2".
+            import sys
+            import oracledb
+            if "cx_Oracle" not in sys.modules:
+                oracledb.version = "8.3.0"  # simula cx_Oracle >= 5.2
+                sys.modules["cx_Oracle"] = oracledb
             return (
-                f"oracle+oracledb://{self.username}:{self.password}"
+                f"oracle+cx_oracle://{self.username}:{self.password}"
                 f"@{self.host}:{self.port}/?service_name={self.database}"
             )
         raise ValueError(f"Unsupported dialect: {self.dialect}")
@@ -76,7 +84,6 @@ class ETLConfig:
 
     # Watermark incremental
     watermark_table: str = "etl_watermarks"
-    state_dir: str = "etl/logs"
 
 
 def load_config() -> ETLConfig:
